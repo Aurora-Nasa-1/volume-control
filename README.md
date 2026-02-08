@@ -1,6 +1,5 @@
 # Linux Knob Controller
 
-[![Release](https://github.com/user/repo/actions/workflows/release.yml/badge.svg)](https://github.com/user/repo/releases)
 [![AUR](https://img.shields.io/aur/version/volume-knob-control-bin)](https://aur.archlinux.org/packages/volume-knob-control-bin)
 
 ---
