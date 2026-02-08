@@ -12,7 +12,6 @@ builds:
       - linux
     goarch:
       - amd64
-      - arm64
     flags:
       - -trimpath
     ldflags:
@@ -21,9 +20,9 @@ builds:
 nfpms:
   - id: default
     package_name: volume-knob-control
-    vendor: YourName
+    vendor: AuroraNasa
     description: Linux Knob Volume and Audio Output Switcher
-    maintainer: YourName <email@example.com>
+    maintainer: AuroraNasa
     license: MIT
     formats:
       - deb
