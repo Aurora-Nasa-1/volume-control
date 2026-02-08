@@ -44,7 +44,7 @@ jobs:
           fetch-depth: 0
 
       - name: Publish AUR package
-        uses: KSXGitHub/github-actions-deploy-aur@latest
+        uses: KSXGitHub/github-actions-deploy-aur@4.1.1
         with:
           pkgname: volume-knob-control-bin
           pkgbuild: ./PKGBUILD
@@ -52,3 +52,4 @@ jobs:
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: "Update to ${{ github.ref_name }}"
+          ssh_keyscan_types: rsa,ecdsa,ed25519
