@@ -30,9 +30,9 @@ nfpms:
     bindir: /usr/local/bin
     contents:
       - src: ./scripts/volume-control.service
-        dst: /etc/systemd/system/volume-control.service
-        type: config
-
+        dst: /usr/lib/systemd/user/volume-control.service
+      - src: ./volume-control
+        dst: /usr/bin/volume-control
 archives:
   - format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
