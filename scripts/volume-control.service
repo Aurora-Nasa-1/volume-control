@@ -1,0 +1,11 @@
+[Unit]
+Description=Volume Knob Control Service
+After=pipewire.service pulseaudio.service
+
+[Service]
+ExecStart=/usr/bin/volume-control
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

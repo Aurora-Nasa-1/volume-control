@@ -1,0 +1,41 @@
+version: 2
+project_name: volume-knob-control
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+nfpms:
+  - id: default
+    package_name: volume-knob-control
+    vendor: YourName
+    description: Linux Knob Volume and Audio Output Switcher
+    maintainer: YourName <email@example.com>
+    license: MIT
+    formats:
+      - deb
+    bindir: /usr/local/bin
+    contents:
+      - src: ./scripts/volume-control.service
+        dst: /etc/systemd/system/volume-control.service
+        type: config
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: 'checksums.txt'
