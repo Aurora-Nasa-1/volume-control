@@ -34,7 +34,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  publish-aur:
+  publish-aur: 
     needs: goreleaser
     runs-on: ubuntu-latest
     steps:
@@ -44,7 +44,7 @@ jobs:
           fetch-depth: 0
 
       - name: Publish AUR package
-        uses: KSXGitHub/github-actions-deploy-aur@4.1.1
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
         with:
           pkgname: volume-knob-control-bin
           pkgbuild: ./PKGBUILD
