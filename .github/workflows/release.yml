@@ -44,7 +44,7 @@ jobs:
           fetch-depth: 0
 
       - name: Publish AUR package
-        uses: KSXPC/github-actions-deploy-aur@master
+        uses: KSXGitHub/github-actions-deploy-aur@v4
         with:
           pkgname: volume-knob-control-bin
           pkgbuild: ./PKGBUILD
