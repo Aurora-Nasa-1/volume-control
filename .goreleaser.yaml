@@ -26,8 +26,8 @@ nfpms:
     contents:
       - src: ./scripts/volume-control.service
         dst: /usr/lib/systemd/user/volume-control.service
-      - src: ./volume-control
-        dst: /usr/bin/volume-control
+      - src: ./volume-knob-control 
+        dst: /usr/bin/volume-knob-control
 archives:
   - format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
