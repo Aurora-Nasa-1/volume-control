@@ -26,7 +26,7 @@ nfpms:
     contents:
       - src: ./scripts/volume-control.service
         dst: /usr/lib/systemd/user/volume-control.service
-      - src: volume-knob-control 
+      - src: "dist/volume-knob-control_linux_amd64_v1/volume-knob-control"
         dst: /usr/bin/volume-knob-control
         type: "file"
 archives:
