@@ -25,11 +25,7 @@ yay -S volume-knob-control-bin
 ```bash
 sudo apt install ./volume-knob-control_amd64.deb
 ```
-### 3. 二进制文件
-```bash 
-chmod +x ./volume-control
-./volume-control
-```
-### `./volume-control -help` 查看参数`
+
+### `volume-knob-control -help` 查看参数`
 
 ## 使用时注意：需要将用户加入 input 用户组，`sudo usermod -aG input $USER`
