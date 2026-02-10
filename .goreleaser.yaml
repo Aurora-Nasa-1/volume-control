@@ -24,9 +24,6 @@ nfpms:
       - deb
     bindir: /usr/local/bin
     contents:
-      - src: "scripts/volume-control.service"
-        dst: /usr/lib/systemd/user/volume-control.service
-        type: "file"
       - src: "dist/volume-knob-control_linux_amd64_v1/volume-knob-control"
         dst: /usr/bin/volume-knob-control
         type: "file"

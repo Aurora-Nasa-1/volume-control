@@ -8,10 +8,22 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	evdev "github.com/gvalkov/golang-evdev"
+)
+
+type ControlMode int
+
+const (
+	ModeAudio ControlMode = iota
+	ModeBrightness
 )
 
 type Config struct {
@@ -22,68 +34,189 @@ type Config struct {
 	Verbose       bool
 }
 
-var cfg Config
+var (
+	cfg         Config
+	currentMode = ModeAudio
+	
+	muteTimer *time.Timer
+	mu        sync.Mutex
+
+	brightnessDelta int32
+	brightnessCh    = make(chan struct{}, 1)
+	
+	useDDC     bool
+	ddcBusNum  string
+)
 
 func main() {
-	// 1. Parameter Parsing
-	flag.StringVar(&cfg.StepSize, "step", "2%", "Volume adjustment step")
-	flag.BoolVar(&cfg.IncludeHDMI, "hdmi", false, "Include HDMI/DP/Digital outputs")
-	flag.StringVar(&cfg.DevicePath, "device", "", "Manual input device path (bypasses search)")
-	flag.StringVar(&cfg.SearchKeyword, "keyword", "Consumer Control", "Device name keyword for auto-discovery")
-	flag.BoolVar(&cfg.Verbose, "verbose", false, "Enable verbose logging")
+	flag.StringVar(&cfg.StepSize, "step", "2%", "Adjustment step")
+	flag.BoolVar(&cfg.IncludeHDMI, "hdmi", false, "Include HDMI/DP outputs")
+	flag.StringVar(&cfg.DevicePath, "device", "", "Device path")
+	flag.StringVar(&cfg.SearchKeyword, "keyword", "Consumer Control", "Search keyword")
+	flag.BoolVar(&cfg.Verbose, "verbose", false, "Verbose logging")
 	flag.Parse()
 
-	// 2. Resolve Device Path
-	targetDevicePath := cfg.DevicePath
-	if targetDevicePath == "" {
+	detectBrightnessMode()
+	go brightnessWorker()
+
+	target := cfg.DevicePath
+	if target == "" {
 		var err error
-		targetDevicePath, err = findDevicePath(cfg.SearchKeyword)
+		target, err = findDevicePath(cfg.SearchKeyword)
 		if err != nil {
-			log.Fatalf("[E] Auto-discovery failed: %v", err)
+			log.Fatalf("[E] Device not found: %v", err)
 		}
 		if cfg.Verbose {
-			fmt.Printf("[I] Device identified: %s\n", targetDevicePath)
+			fmt.Printf("[I] Device: %s\n", target)
 		}
 	}
 
-	// 3. Open Device
-	dev, err := evdev.Open(targetDevicePath)
+	dev, err := evdev.Open(target)
 	if err != nil {
-		log.Fatalf("[E] Failed to open device [%s]: %v", targetDevicePath, err)
+		log.Fatalf("[E] Open failed: %v", err)
 	}
 
-	// 4. Grab Device (Exclusive Access)
-	// Prevents other apps from receiving keys to avoid conflicts and reduce latency
-	err = dev.Grab()
-	if err != nil {
-		log.Fatalf("[E] Could not grab device: %v", err)
-	}
-	if cfg.Verbose {
-		fmt.Println("Device grabbed. Press Ctrl+C to exit.")
+	if err = dev.Grab(); err != nil {
+		log.Fatalf("[E] Grab failed: %v", err)
 	}
 
-	// 5. Cleanup Handling
 	setupSignalHandler(dev)
 	defer dev.Release()
 
-	// 6. Event Loop
-	log.Println("Listening for events...")
+	log.Println("Started. Double-click Mute to switch modes.")
+
 	for {
 		event, err := dev.ReadOne()
 		if err != nil {
-			log.Printf("[W] Device disconnected or read error: %v", err)
 			break
 		}
 
-		// Handle Key Press (1) or Auto-Repeat (2)
-		if event.Type == evdev.EV_KEY && event.Value == 1 {
+		if event.Type == evdev.EV_KEY && (event.Value == 1 || event.Value == 2) {
 			switch event.Code {
 			case evdev.KEY_VOLUMEUP:
-				changeVolume("+" + cfg.StepSize)
+				handleAdjustment("up")
 			case evdev.KEY_VOLUMEDOWN:
-				changeVolume("-" + cfg.StepSize)
+				handleAdjustment("down")
 			case evdev.KEY_MUTE:
-				handleMuteLogic()
+				if event.Value == 1 {
+					handleMutePress()
+				}
+			}
+		}
+	}
+}
+
+func detectBrightnessMode() {
+	// Prefer native backlight
+	entries, _ := os.ReadDir("/sys/class/backlight")
+	if len(entries) > 0 {
+		useDDC = false
+		if cfg.Verbose {
+			log.Println("[I] Mode: Laptop Backlight")
+		}
+		return
+	}
+
+	useDDC = true
+	// Optimize DDC: find bus once
+	out, err := exec.Command("ddcutil", "detect", "--terse").Output()
+	if err == nil {
+		re := regexp.MustCompile(`/dev/i2c-(\d+)`)
+		match := re.FindSubmatch(out)
+		if len(match) > 1 {
+			ddcBusNum = string(match[1])
+			if cfg.Verbose {
+				log.Printf("[I] Mode: DDC/CI (Bus %s)", ddcBusNum)
+			}
+		}
+	}
+	if ddcBusNum == "" && cfg.Verbose {
+		log.Println("[I] Mode: DDC/CI (Auto-scan)")
+	}
+}
+
+func handleAdjustment(dir string) {
+	prefix := "+"
+	if dir == "down" {
+		prefix = "-"
+	}
+
+	if currentMode == ModeAudio {
+		changeVolume(prefix + cfg.StepSize)
+	} else {
+		changeBrightness(prefix + cfg.StepSize)
+	}
+}
+
+func handleMutePress() {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if muteTimer != nil {
+		if muteTimer.Stop() {
+			toggleControlMode()
+		}
+		muteTimer = nil
+	} else {
+		muteTimer = time.AfterFunc(300*time.Millisecond, func() {
+			mu.Lock()
+			defer mu.Unlock()
+			handleMuteLogic()
+			muteTimer = nil
+		})
+	}
+}
+
+func toggleControlMode() {
+	if currentMode == ModeAudio {
+		currentMode = ModeBrightness
+		modeStr := "Backlight"
+		if useDDC {
+			modeStr = "DDC/CI"
+		}
+		showNotification("Mode: Brightness", fmt.Sprintf("Control: %s", modeStr))
+	} else {
+		currentMode = ModeAudio
+		showNotification("Mode: Audio", "Control: System Volume")
+	}
+}
+
+func changeBrightness(amt string) {
+	s := strings.TrimRight(amt, "%")
+	val, _ := strconv.Atoi(s)
+	atomic.AddInt32(&brightnessDelta, int32(val))
+
+	select {
+	case brightnessCh <- struct{}{}:
+	default:
+	}
+}
+
+func brightnessWorker() {
+	for range brightnessCh {
+		for {
+			delta := atomic.SwapInt32(&brightnessDelta, 0)
+			if delta == 0 {
+				break
+			}
+			
+			op := "+"
+			absVal := delta
+			if delta < 0 {
+				op = "-"
+				absVal = -delta
+			}
+			valStr := fmt.Sprintf("%d", absVal)
+
+			if useDDC {
+				args := []string{"setvcp", "10", op, valStr}
+				if ddcBusNum != "" {
+					args = append(args, "--bus", ddcBusNum)
+				}
+				exec.Command("ddcutil", args...).Run()
+			} else {
+				// brightnessctl set 5%+
+				exec.Command("brightnessctl", "set", valStr+"%"+op).Run()
 			}
 		}
 	}
@@ -94,133 +227,108 @@ func setupSignalHandler(dev *evdev.InputDevice) {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
-		if cfg.Verbose {
-			fmt.Println("\nReleasing device and exiting...")
-		}
 		dev.Release()
 		os.Exit(0)
 	}()
 }
 
 func handleMuteLogic() {
-	sinks, currentDefault, err := getFilteredSinks()
+	if currentMode != ModeAudio {
+		return 
+	}
+
+	sinks, def, err := getSinks()
 	if err != nil {
-		log.Printf("Audio device error: %v", err)
 		return
 	}
 
 	if len(sinks) <= 1 {
-		// Single device: Toggle mute state
-		if cfg.Verbose {
-			log.Println("Single device mode: Toggling mute")
-		}
 		exec.Command("wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle").Run()
 		showNotification("Mute Toggled", "")
 	} else {
-		// Multiple devices: Cycle to next sink
-		switchToNextDevice(sinks, currentDefault)
+		switchDevice(sinks, def)
 	}
 }
 
-func changeVolume(amount string) {
-	// Reformat "+2%" to "2%+" for wpctl compatibility
-	val := strings.TrimLeft(amount, "+-")
+func changeVolume(amt string) {
+	val := strings.TrimLeft(amt, "+-")
 	op := "+"
-	if strings.HasPrefix(amount, "-") {
+	if strings.HasPrefix(amt, "-") {
 		op = "-"
 	}
-
-	err := exec.Command("wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", val+op).Run()
-	if err != nil && cfg.Verbose {
-		log.Printf("Volume adjustment failed: %v", err)
-	}
+	// Add --limit 1.0 to prevent volume exceeding 100%
+	exec.Command("wpctl", "set-volume", "--limit", "1.0", "@DEFAULT_AUDIO_SINK@", val+op).Run()
 }
 
-func switchToNextDevice(sinks []string, currentDefault string) {
-	nextIdx := 0
-	found := false
+func switchDevice(sinks []string, cur string) {
+	idx := 0
 	for i, name := range sinks {
-		if name == currentDefault {
-			nextIdx = (i + 1) % len(sinks)
-			found = true
+		if name == cur {
+			idx = (i + 1) % len(sinks)
 			break
 		}
 	}
-	if !found {
-		nextIdx = 0
-	}
-
-	nextSink := sinks[nextIdx]
-
-	// 1. Set default 2. Unmute
-	exec.Command("pactl", "set-default-sink", nextSink).Run()
-	exec.Command("pactl", "set-sink-mute", nextSink, "0").Run()
-
-	if cfg.Verbose {
-		fmt.Printf("Switched to: %s\n", nextSink)
-	}
-	showNotification("Audio Output Switched", fmt.Sprintf("Active: %s", nextSink))
+	next := sinks[idx]
+	exec.Command("pactl", "set-default-sink", next).Run()
+	exec.Command("pactl", "set-sink-mute", next, "0").Run()
+	showNotification("Output Switched", next)
 }
 
-func getFilteredSinks() ([]string, string, error) {
-	// Get current default
-	defaultOut, err := exec.Command("pactl", "get-default-sink").Output()
+func getSinks() ([]string, string, error) {
+	defOut, err := exec.Command("pactl", "get-default-sink").Output()
 	if err != nil {
 		return nil, "", err
 	}
-	currentDefault := strings.TrimSpace(string(defaultOut))
+	def := strings.TrimSpace(string(defOut))
 
-	// Get sink list
 	out, err := exec.Command("pactl", "list", "short", "sinks").Output()
 	if err != nil {
 		return nil, "", err
 	}
 
 	var sinks []string
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	excludeKeywords := []string{"hdmi", "digital-video", "spdif"}
+	sc := bufio.NewScanner(strings.NewReader(string(out)))
+	excludes := []string{"hdmi", "digital-video", "spdif"}
 
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 2 {
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) < 2 {
 			continue
 		}
-		name := fields[1]
+		name := f[1]
 
 		if !cfg.IncludeHDMI {
-			isExcluded := false
-			lowerName := strings.ToLower(name)
-			for _, kw := range excludeKeywords {
-				if strings.Contains(lowerName, kw) {
-					isExcluded = true
+			excl := false
+			lname := strings.ToLower(name)
+			for _, k := range excludes {
+				if strings.Contains(lname, k) {
+					excl = true
 					break
 				}
 			}
-			if isExcluded {
+			if excl {
 				continue
 			}
 		}
 		sinks = append(sinks, name)
 	}
-	return sinks, currentDefault, nil
+	return sinks, def, nil
 }
 
-func findDevicePath(keyword string) (string, error) {
-	devices, err := evdev.ListInputDevices()
+func findDevicePath(kw string) (string, error) {
+	devs, err := evdev.ListInputDevices()
 	if err != nil {
 		return "", err
 	}
-
-	keywordLower := strings.ToLower(keyword)
-	for _, dev := range devices {
-		if strings.Contains(strings.ToLower(dev.Name), keywordLower) {
-			return dev.Fn, nil
+	kw = strings.ToLower(kw)
+	for _, d := range devs {
+		if strings.Contains(strings.ToLower(d.Name), kw) {
+			return d.Fn, nil
 		}
 	}
-	return "", fmt.Errorf("no device found matching '%s'", keyword)
+	return "", fmt.Errorf("not found: %s", kw)
 }
 
 func showNotification(title, body string) {
-	// Async notification to prevent UI lag
-	go exec.Command("notify-send", "-t", "2000", "-h", "string:x-canonical-private-synchronous:volume-switch", title, body).Run()
+	exec.Command("notify-send", "-t", "1000", "-h", "string:x-canonical-private-synchronous:vol-knob", title, body).Start()
 }
